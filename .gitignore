@@ -1,0 +1,7 @@
+venv/
+*.pdf
+build/
+__pycache__/
+.vscode/
+DigiSign.spec
+.venv/
