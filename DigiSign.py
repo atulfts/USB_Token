@@ -119,9 +119,10 @@ def file_processing(context):
     logging.info("4.Processing file " + context[1])
     try:
         last_pg = last_page(os.path.join(INPROCESS_DIR, context[0]))
+        cn = context[4].cert_name()
+        cn = (cn.split()[-1] + "\n" + " ".join(cn.split()[:-1]))  if len(cn) > 18 else cn
+        str_now = context[3].strftime("%Y%m%d%H%M%S+00'00'")
         for pg in range(0, last_pg):
-            cn = context[4].cert_name()
-            str_now = context[3].strftime("%Y%m%d%H%M%S+00'00'")
             ctx = {
                 "aligned": 0,
                 "sigflags": 3,
@@ -144,11 +145,11 @@ def file_processing(context):
                             # Text
                             [
                                 "text_box",
-                                f"{cn}\nDigitally Signed by: {cn}\nDate: {str_now}",
+                                f"\n \n \nDigitally Signed by:{cn}\nDate: {str_now}",
                                 "default",
                                 10,
                                 1,
-                                270,
+                                170,
                                 50,
                                 6,
                                 True,
@@ -433,8 +434,8 @@ def main():
                             ab_list = file_name.split("_")
                             cord_a = int(ab_list[-1])
                             cord_b = int(ab_list[-2])
-                            cord_c = cord_a + 260
-                            cord_d = cord_b + 75
+                            cord_c = cord_a + 180
+                            cord_d = cord_b + 40
                             context = [
                                 filename_ext,
                                 file_name,
@@ -453,5 +454,5 @@ def main():
 if __name__ == "__main__":
     main()
     rmv(TICK_PATH)
-    #rmv(DLL_PATH)
+    rmv(DLL_PATH)
     rmv(FONT_PATH)
