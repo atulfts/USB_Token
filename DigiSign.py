@@ -13,6 +13,11 @@ from endesive import pdf, hsm
 from PyKCS11 import PyKCS11Lib, PyKCS11Error
 from PyKCS11.LowLevel import CKA_CLASS, CKO_CERTIFICATE, CKA_LABEL
 
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509.oid import NameOID
+
+
 SERVICE = False
 TOKEN_PWD = "abcd1234"
 BASE_DIR = os.path.join("C:\\", "SAP", "Digi_Sign")
@@ -129,7 +134,7 @@ def file_processing(context):
                 "signature_manual": [
                     [
                         "text_box",
-                        f"Digitally Signed by: {cn}\nDate: {str_now}",
+                        f"{cn}\nDigitally Signed by: {cn}\nDate: {str_now}",
                         "default",
                         12,
                         1,
@@ -312,22 +317,34 @@ def main():
 
                 try:
                     session = self.open_session()
-                    certificates = session.findObjects([(CKA_CLASS, CKO_CERTIFICATE)])
-                    label = ""
+
+                    certificates = session.findObjects([
+                        (CKA_CLASS, CKO_CERTIFICATE)
+                    ])
 
                     for cert in certificates:
-                        certificate_info = session.getAttributeValue(cert, [CKA_LABEL])
-                        label = certificate_info[0]
-                        break
 
-                    l_sign = label.split(" ")
-                    label = ""
+                        # Get certificate binary
+                        cert_der = bytes(session.getAttributeValue(
+                            cert,
+                            [PyKCS11.CKA_VALUE]
+                        )[0])
 
-                    for x in range(0, len(l_sign) // 2):
-                        label += l_sign[x] + " "
-                        if x == 0:
-                            label += "\n"
-                    return label
+
+                        x509_cert = x509.load_der_x509_certificate(
+                            cert_der,
+                            default_backend()
+                        )
+
+                        cn = x509_cert.subject.get_attributes_for_oid(
+                            NameOID.COMMON_NAME
+                        )[0].value
+
+                        print("Certificate Name:", cn)
+
+                        return cn
+
+                    return "Unknown User"
 
                 except PyKCS11Error as e:
                     logging.warning("12." + str(e))
