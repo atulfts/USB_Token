@@ -132,31 +132,33 @@ def file_processing(context):
                 "signform": False,
                 "signaturebox": context[2],
                 "signature_manual": [
-                    [
-                        "text_box",
-                        f"{cn}\nDigitally Signed by: {cn}\nDate: {str_now}",
-                        "default",
-                        12,
-                        1,
-                        270,
-                        40,
-                        8,
-                        True,
-                        "left",
-                        "top",
-                    ],
-                    ["fill_colour", 0.4, 0.4, 0.4],
-                    ["rect_fill", 0, 50, 250, 1],
-                    ["fill_colour", 0, 0, 0],
-                    [
-                        "image",
-                        "tick",
-                        context[2][1] * 0.3,
-                        0,
-                        context[2][1],
-                        context[2][1] * 0.5,
-                    ],
-                ],
+                            [
+                                "image",
+                                "tick",
+                                85,   # center X
+                                2,    # top
+                                40,   # width
+                                40,   # height
+                            ],
+
+                            # Text
+                            [
+                                "text_box",
+                                f"{cn}\nDigitally Signed by: {cn}\nDate: {str_now}",
+                                "default",
+                                10,
+                                1,
+                                270,
+                                50,
+                                6,
+                                True,
+                                "left",
+                                "top",
+                            ],
+
+                            ["fill_colour", 0.4, 0.4, 0.4],
+                            #["rect_fill", 0, 52, 250, 1],
+                        ],
                 "manual_images": {"tick": "tick.png"},
                 "manual_fonts": {"DancingScript": "trebuc.ttf"},
                 "contact": "",
@@ -431,8 +433,8 @@ def main():
                             ab_list = file_name.split("_")
                             cord_a = int(ab_list[-1])
                             cord_b = int(ab_list[-2])
-                            cord_c = cord_a + 130
-                            cord_d = cord_b + 40
+                            cord_c = cord_a + 260
+                            cord_d = cord_b + 75
                             context = [
                                 filename_ext,
                                 file_name,
