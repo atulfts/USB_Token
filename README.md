@@ -82,19 +82,10 @@ python main.py
 
 # Build EXE
 
-Basic build:
-
-```bash
-pyinstaller --onefile --add-binary "eps2003csp11v2.dll;." main.py
-```
-
 Build with image support:
 
 ```bash
-pyinstaller --onefile ^
---add-data "tick.png;." ^
---add-binary "eps2003csp11v2.dll;." ^
-main.py
+pyinstaller --onefile --windowed --icon=app.ico --distpath "C:\SAP\Digi_Sign" --add-data "tick.png;." --add-data "logo.png;." --add-data "eps2003csp11v2.dll;." --add-data "trebuc.ttf;." DigiSign.py
 ```
 
 ---
