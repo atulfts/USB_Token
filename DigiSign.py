@@ -1,5 +1,7 @@
 import os
 import sys
+import base64
+from time import sleep
 import fitz
 import attr
 import shutil
@@ -23,11 +25,13 @@ TOKEN_PWD = "abcd1234"
 BASE_DIR = os.path.join("C:\\", "SAP", "Digi_Sign")
 INPROCESS_DIR = os.path.join(BASE_DIR, "InProcess")
 SUCCESS_DIR = os.path.join(BASE_DIR, "Success")
+os.makedirs(SUCCESS_DIR, exist_ok=True)
 DLL_FILE = "eps2003csp11v2.dll"
-DLL_PATH = os.path.join(r"C:\Windows\System32", DLL_FILE)
-TICK_PATH = os.path.join(os.getcwd(), "tick.png")
-FONT_PATH = os.path.join(os.getcwd(), "trebuc.ttf")
-LOG_PATH = os.path.join(os.getcwd(), "dsc.log")
+DLL_PATH = os.path.join(BASE_DIR, DLL_FILE)
+TICK_PATH = os.path.join(BASE_DIR, "tick.png")
+FONT_PATH = os.path.join(BASE_DIR, "trebuc.ttf")
+LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
+LOG_PATH = os.path.join(BASE_DIR, "dsc.log")
 
 
 def exe_store(file_path):
@@ -43,10 +47,12 @@ def store_assets():
     try:
         if not os.path.exists(os.path.join(os.getcwd(), "tick.png")):
             shutil.copy(exe_store("tick.png"), os.getcwd())
-        # if not os.path.exists(os.path.join(os.getcwd(), DLL_FILE)):
-        #     shutil.copy(exe_store(DLL_FILE), os.getcwd())
+        if not os.path.exists(os.path.join(os.getcwd(), DLL_FILE)):
+            shutil.copy(exe_store(DLL_FILE), os.getcwd())
         if not os.path.exists(os.path.join(os.getcwd(), "trebuc.ttf")):
             shutil.copy(exe_store("trebuc.ttf"), os.getcwd())
+        if not os.path.exists(os.path.join(os.getcwd(), "logo.png")):
+            shutil.copy(exe_store("logo.png"), os.getcwd())
     except Exception as e:
         logging.warning("1." + str(e))
 
@@ -214,25 +220,134 @@ def file_processing(context):
         logging.warning("11." + str(e))
 
 
+def _load_logo():
+    """
+    Loads logo.png from next to the script or BASE_DIR.
+    Scales to fit within 200 x 70 px, preserving aspect ratio.
+    Returns a tk.PhotoImage, or None if no logo file is found.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(script_dir, "logo.png"),
+        os.path.join(BASE_DIR,   "logo.png"),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            doc = fitz.open(path)
+            page = doc[0]
+            w, h = page.rect.width, page.rect.height
+            scale = min(200 / w, 70 / h, 2.0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
+            doc.close()
+            return tk.PhotoImage(data=base64.b64encode(pix.tobytes("png")).decode())
+        except Exception:
+            pass
+    return None
+
+
 def esign_app():
     """
-    Tkinter add to capture the usb token password from the user
+    Tkinter dialog to capture the USB token PIN from the user.
     """
-    app = tk.Tk()
-    app.title("F.T. Solutions Pvt Ltd")
-    app.geometry("400x200")
-    app.configure(bg="black")
+    # ── Light theme palette ───────────────────────────────────────────────────
+    BG         = "#f9fafb"
+    HEADER_BG  = "#ffffff"
+    INPUT_BG   = "#ffffff"
+    BORDER     = "#d1d5db"
+    ACCENT     = "#2563eb"
+    ACCENT_H   = "#1d4ed8"
+    FG_MAIN    = "#111827"
+    FG_DIM     = "#6b7280"
+    ERR_FG     = "#dc2626"
+    BTN_SEC_BG = "#f3f4f6"
+    BTN_SEC_FG = "#374151"
 
-    pwd_label = tk.Label(app, text="Password:", fg="white", bg="black")
-    pwd_label.pack(pady=10)
-    pwd = tk.Entry(app, show="*")
-    pwd.pack()
+    app = tk.Tk()
+    app.title("F.T. Solutions – Digital Signing")
+    app.resizable(False, False)
+    app.configure(bg=BG)
+
+    W, H = 420, 320
+    app.update_idletasks()
+    x = (app.winfo_screenwidth()  - W) // 2
+    y = (app.winfo_screenheight() - H) // 2
+    app.geometry(f"{W}x{H}+{x}+{y}")
+
+    app.attributes("-topmost", True)
+    app.after(200, lambda: app.attributes("-topmost", False))
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    header = tk.Frame(app, bg=HEADER_BG, pady=20)
+    header.pack(fill="x")
+
+    logo_photo = _load_logo()
+    if logo_photo:
+        lbl = tk.Label(header, image=logo_photo, bg=HEADER_BG)
+        lbl.image = logo_photo          # keep reference alive
+        lbl.pack()
+    else:
+        tk.Label(header, text="F.T. Solutions Pvt Ltd",
+                 font=("Segoe UI", 14, "bold"), fg=ACCENT, bg=HEADER_BG).pack()
+
+    tk.Label(header, text="USB Token Authentication",
+             font=("Segoe UI", 9), fg=FG_DIM, bg=HEADER_BG).pack(pady=(4, 0))
+
+    tk.Frame(app, bg=BORDER, height=1).pack(fill="x")
+
+    # ── Body ──────────────────────────────────────────────────────────────────
+    body = tk.Frame(app, bg=BG, padx=40, pady=24)
+    body.pack(fill="both", expand=True)
+
+    tk.Label(body, text="Token PIN / Password",
+             font=("Segoe UI", 9, "bold"), fg=FG_MAIN, bg=BG).pack(anchor="w")
+
+    # Bordered input row
+    border_frame = tk.Frame(body, bg=BORDER)
+    border_frame.pack(fill="x", pady=(6, 0))
+    input_row = tk.Frame(border_frame, bg=INPUT_BG)
+    input_row.pack(fill="x", padx=1, pady=1)
+
+    pwd = tk.Entry(input_row, show="●", font=("Segoe UI", 11),
+                   bg=INPUT_BG, fg=FG_MAIN, bd=0, relief="flat",
+                   insertbackground=FG_MAIN)
+    pwd.pack(side="left", fill="x", expand=True, ipady=9, padx=(10, 0))
+
+    visible = tk.BooleanVar(value=False)
+
+    def toggle_visibility():
+        if visible.get():
+            pwd.config(show="●")
+            eye_btn.config(text="\U0001f441")
+            visible.set(False)
+        else:
+            pwd.config(show="")
+            eye_btn.config(text="\U0001f648")
+            visible.set(True)
+
+    eye_btn = tk.Button(input_row, text="\U0001f441", command=toggle_visibility,
+                        bg=INPUT_BG, fg=FG_DIM, bd=0, relief="flat",
+                        font=("Segoe UI", 11), cursor="hand2",
+                        activebackground=INPUT_BG)
+    eye_btn.pack(side="right", padx=6)
+
+    err_label = tk.Label(body, text="", font=("Segoe UI", 8),
+                         fg=ERR_FG, bg=BG)
+    err_label.pack(anchor="w", pady=(6, 0))
+
+    # ── Buttons ───────────────────────────────────────────────────────────────
+    btn_row = tk.Frame(body, bg=BG)
+    btn_row.pack(fill="x", pady=(8, 0))
 
     def start_service():
         global TOKEN_PWD, SERVICE
-        pin = pwd.get()
-        if pin:
-            TOKEN_PWD = pin
+        pin = pwd.get().strip()
+        if not pin:
+            err_label.config(text="PIN cannot be empty.")
+            pwd.focus_set()
+            return
+        TOKEN_PWD = pin
         SERVICE = True
         app.destroy()
 
@@ -241,16 +356,21 @@ def esign_app():
         SERVICE = False
         app.destroy()
 
-    sign_button = tk.Button(
-        app, text="Start Signing", command=start_service, bg="purple", fg="white"
-    )
-    sign_button.pack(pady=20)
+    tk.Button(btn_row, text="Cancel", command=end_service,
+              bg=BTN_SEC_BG, fg=BTN_SEC_FG, bd=0, relief="flat",
+              font=("Segoe UI", 10), cursor="hand2",
+              padx=18, pady=7,
+              activebackground="#e5e7eb").pack(side="right", padx=(8, 0))
 
-    cancel_button = tk.Button(
-        app, text="Cancel", command=end_service, bg="red", fg="white"
-    )
-    cancel_button.pack(pady=10)
+    tk.Button(btn_row, text="Start Signing", command=start_service,
+              bg=ACCENT, fg="#ffffff", bd=0, relief="flat",
+              font=("Segoe UI", 10, "bold"), cursor="hand2",
+              padx=18, pady=7,
+              activebackground=ACCENT_H).pack(side="right")
 
+    app.bind("<Return>", lambda _: start_service())
+    app.bind("<Escape>", lambda _: end_service())
+    pwd.focus_set()
     app.mainloop()
 
 
@@ -453,6 +573,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+    sleep(15)
     rmv(TICK_PATH)
-    rmv(DLL_PATH)
+    try:
+        rmv(DLL_PATH)
+    except PermissionError:
+        pass
     rmv(FONT_PATH)
+    rmv(LOGO_PATH)
