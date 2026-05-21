@@ -222,12 +222,6 @@ git push -u origin master
 
 ---
 
-# Author
-
-Created by Atul Yadav
-
----
-
 # License
 
 MIT License
