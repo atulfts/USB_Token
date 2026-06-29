@@ -433,7 +433,7 @@ def main():
     place all the assets folder files in the root/project folder before executing or creating an exe
     Comment line 1 and add line 2 in the path listed below b4 creating exe
     1.HELVETICA_PATH = os.path.join(os.path.dirname(__file__), "..", "fonts", "Helvetica.ttf")
-    2.HELVETICA_PATH = 'trebuc.ttf'
+    2.HELVETICA_PATH = os.path.join(r"C:\SAP\Digi_Sign", "trebuc.ttf")
 
     Paths to find point 1
     venv\Lib\site-packages\endesive\pdf\PyPDF2_annotate\annotations\
