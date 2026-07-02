@@ -5,3 +5,9 @@ __pycache__/
 .vscode/
 DigiSign.spec
 .venv/
+.vs/
+.gitignore
+*.png
+*.ttf
+*.dll
+*.log

@@ -4,3 +4,4 @@ PyKCS11
 PyMuPDF
 PyMuPDFb
 attrs
+psutil

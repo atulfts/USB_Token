@@ -1,86 +1,134 @@
-import os
 import sys
-import base64
-from time import sleep
 import fitz
 import attr
+import psutil
+import base64
+import pickle
 import shutil
 import logging
 import PyKCS11
 import datetime
+import argparse
 import tkinter as tk
 
+from pathlib import Path
 from threading import Thread
 from endesive import pdf, hsm
 from PyKCS11 import PyKCS11Lib, PyKCS11Error
-from PyKCS11.LowLevel import CKA_CLASS, CKO_CERTIFICATE, CKA_LABEL
+from PyKCS11.LowLevel import CKA_CLASS, CKO_CERTIFICATE
 
 from cryptography import x509
-from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import NameOID
-
+from cryptography.hazmat.backends import default_backend
 
 SERVICE = False
+LOG_FILE = "dsc.log"
 TOKEN_PWD = "abcd1234"
-BASE_DIR = os.path.join("C:\\", "SAP", "Digi_Sign")
-INPROCESS_DIR = os.path.join(BASE_DIR, "InProcess")
-SUCCESS_DIR = os.path.join(BASE_DIR, "Success")
-os.makedirs(SUCCESS_DIR, exist_ok=True)
+CFG_FILE = "stor.pkl"
+TICK_FILE = "tick.png"
+FONT_FILE = "trebuc.ttf"
+FT_LOGO_FILE = "logo.png"
 DLL_FILE = "eps2003csp11v2.dll"
-DLL_PATH = os.path.join(BASE_DIR, DLL_FILE)
-TICK_PATH = os.path.join(BASE_DIR, "tick.png")
-FONT_PATH = os.path.join(BASE_DIR, "trebuc.ttf")
-LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
-LOG_PATH = os.path.join(BASE_DIR, "dsc.log")
+PDF_DIR = "InProcess"
+SIGNED_PDF_DIR = "Success"
+
+BASE_DIR = Path(r"C:\SAP\Digi_Sign")
+CFG_PATH = BASE_DIR / CFG_FILE
+IN_DIR = BASE_DIR / PDF_DIR
+OUT_DIR = BASE_DIR / SIGNED_PDF_DIR
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+DLL_PATH = BASE_DIR / DLL_FILE
+TICK_PATH = BASE_DIR / TICK_FILE
+FONT_PATH = BASE_DIR / FONT_FILE
+LOGO_PATH = BASE_DIR / FT_LOGO_FILE
+LOG_PATH = BASE_DIR / LOG_FILE
 
 
-def exe_store(file_path):
+logging.basicConfig(
+    filename=str(LOG_PATH),
+    filemode="a",
+    level=logging.DEBUG,
+    format="%(asctime)s|%(levelname)s|%(funcName)s|%(lineno)d|%(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+
+def rmv(path: Path):
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as err:
+        logging.critical(f"{err}")
+
+
+def load_config():
+    """Return (saved_flags, saved_password) from pickle. Both default to empty/None on error."""
+    if CFG_PATH.exists():
+        logging.debug(f"Config Found")
+        try:
+            with open(CFG_PATH, "rb") as fil:
+                data = pickle.load(fil)
+                logging.debug(f"Config Read")
+
+            if isinstance(data, dict):
+                flag, password = data.get("flags", []), data.get("password")
+                logging.debug(f"Flag: {flag}|Password: ******")
+                return flag, password
+
+            if isinstance(data, list):
+                logging.debug(f"Flag: {data}|Password: {None}")
+                return data, None
+        except Exception as err:
+            logging.critical(f"{err}")
+    else:
+        logging.debug(f"Config Not Found")
+
+    return [], None
+
+
+def exe_store(filename: Path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
-    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, file_path)
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    logging.debug(f"{base_path}")
+    src_dir = str(base_path / filename)
+    logging.debug(f"{src_dir}")
+    return src_dir
 
 
 def store_assets():
     """
-    Moves all assets in the exe temp folder to exe folder
+    Copies required assets from the executable temp folder to BASE_DIR.
+    Uses BASE_DIR (not cwd) so the path is stable regardless of which
+    process launched the exe and what cwd that process set.
     """
-    try:
-        if not os.path.exists(os.path.join(os.getcwd(), "tick.png")):
-            shutil.copy(exe_store("tick.png"), os.getcwd())
-        if not os.path.exists(os.path.join(os.getcwd(), DLL_FILE)):
-            shutil.copy(exe_store(DLL_FILE), os.getcwd())
-        if not os.path.exists(os.path.join(os.getcwd(), "trebuc.ttf")):
-            shutil.copy(exe_store("trebuc.ttf"), os.getcwd())
-        if not os.path.exists(os.path.join(os.getcwd(), "logo.png")):
-            shutil.copy(exe_store("logo.png"), os.getcwd())
-    except Exception as e:
-        logging.warning("1." + str(e))
+    for filepath in (TICK_PATH, DLL_PATH, FONT_PATH, LOGO_PATH):
+        try:
+            if not filepath.exists():
+                shutil.copy2(exe_store(filepath.name), str(filepath))
+                logging.info("Copied %s -> %s", filepath.name, filepath)
+                continue
+            logging.info("Exist %s", filepath)
+        except Exception as err:
+            logging.critical(f"{filepath.name}|{err}")
 
 
-def rmv(path):
-    """
-    @param path: Removes the file if exist
-    """
-    if os.path.exists(path):
-        os.remove(path)
-
-
-def last_page(file):
+def last_page(filename: Path):
     """
     @param file: Pass full path of the file
     @return: Last page number of the pdf
     """
     pages = 1
     try:
-        o_pdf = fitz.open(file)
-        pages = o_pdf.page_count
-        o_pdf.close()
-    except Exception as e:
-        logging.warning("2." + str(e))
+        pdf = fitz.open(str(filename))
+        pages = pdf.page_count
+        pdf.close()
+    except Exception as err:
+        logging.critical(f"{err}")
+    logging.info(f"Last Page No: {pages}")
     return pages
 
 
-def sign_pdf(file, context, clshsm, signed_file="_signed.pdf"):
+def sign_pdf(file: Path, ctx, clshsm):
     """
     @param file: pass path/to/filename.ext
     @param context: list containing five parameters
@@ -95,39 +143,38 @@ def sign_pdf(file, context, clshsm, signed_file="_signed.pdf"):
     @param signed_file: appending name of the output file
     """
     try:
-        o_signedfile = None
-        with open(file, "rb") as fp:
-            o_file = fp.read()
-            logging.warning(f"3.0 {o_file}")
-            o_signedfile = pdf.cms.sign(o_file, context, None, None, [], "sha256", clshsm)
-            logging.warning(f"3.1 {o_signedfile}")
-        file = file.replace(".pdf", signed_file)
-        logging.warning(f"3.2 {file}")
-        with open(file, "wb") as fp:
-            logging.warning(f"3.3 {fp}")
-            fp.write(o_file)
-            fp.write(o_signedfile)
-    except Exception as e:
-        logging.warning("3." + str(e))
+        signedData = None
+        with open(str(file), "rb") as fp:
+            filedata = fp.read()
+            signedData = pdf.cms.sign(
+                filedata, ctx, None, None, [], "sha256", clshsm
+            )
+            logging.info(f"{file.name}")
+
+        with open(str(file), "wb") as fp:
+            fp.write(filedata)
+            fp.write(signedData)
+            logging.info(f"Saved {file.name}")
+    except Exception as err:
+        logging.critical(f"{err}")
 
 
-def file_processing(context):
+def processingFile(file_path, cordinates, timestamp, clshsm):
     """
     @param context: list containing five parameters
       [
       "filename_with_ext",
-      "filename_without_ext"'
       (coordinate_A,coordinate_B,oordinate_C,coordinate_D),
       signing_datetime,
       Signer_token_instance
       ]
     """
-    logging.info("4.Processing file " + context[1])
+    logging.debug(f"{file_path.name}")
     try:
-        last_pg = last_page(os.path.join(INPROCESS_DIR, context[0]))
-        cn = context[4].cert_name()
-        cn = (cn.split()[-1] + "\n" + " ".join(cn.split()[:-1]))  if len(cn) > 18 else cn
-        str_now = context[3].strftime("%Y%m%d%H%M%S+00'00'")
+        last_pg = last_page(file_path)
+        cn = clshsm.cert_name()
+        cn = (cn.split()[-1] + "\n" + " ".join(cn.split()[:-1])) if len(cn) > 18 else cn
+        str_now = timestamp.strftime("%Y%m%d%H%M%S+00'00'")
         for pg in range(0, last_pg):
             ctx = {
                 "aligned": 0,
@@ -137,113 +184,73 @@ def file_processing(context):
                 "sigfield": "Signature" + str(pg),
                 "auto_sigfield": True,
                 "signform": False,
-                "signaturebox": context[2],
+                "signaturebox": cordinates,
                 "signature_manual": [
-                            [
-                                "image",
-                                "tick",
-                                85,   # center X
-                                2,    # top
-                                40,   # width
-                                40,   # height
-                            ],
-
-                            # Text
-                            [
-                                "text_box",
-                                f"\n \n \nDigitally Signed by:{cn}\nDate: {str_now}",
-                                "default",
-                                10,
-                                1,
-                                170,
-                                50,
-                                6,
-                                True,
-                                "left",
-                                "top",
-                            ],
-
-                            ["fill_colour", 0.4, 0.4, 0.4],
-                            #["rect_fill", 0, 52, 250, 1],
-                        ],
-                "manual_images": {"tick": "tick.png"},
-                "manual_fonts": {"DancingScript": "trebuc.ttf"},
+                    [
+                        "image",
+                        "tick",
+                        85,   # center X
+                        2,    # top
+                        40,   # width
+                        40,   # height
+                    ],
+                    [
+                        "text_box",
+                        f"\n \n \nDigitally Signed by:{cn}\nDate: {str_now}",
+                        "default",
+                        10,
+                        1,
+                        170,
+                        50,
+                        6,
+                        True,
+                        "left",
+                        "top",
+                    ],
+                    ["fill_colour", 0.4, 0.4, 0.4],
+                ],
+                "manual_images": {"tick": str(TICK_PATH)},
+                "manual_fonts": {"DancingScript": str(FONT_PATH)},
                 "contact": "",
                 "location": "India",
                 "signingdate": str_now,
                 "reason": "",
             }
 
+            sign_pdf(file_path, ctx, clshsm)
+
             if pg == (last_pg - 1):
-                sign_pdf(os.path.join(INPROCESS_DIR, context[0]), ctx, context[4])
+                source_file = file_path
+                dest_file = OUT_DIR / Path(file_path.stem + "_signed.pdf")
 
-                # If successful signed file generated
-                source_file = os.path.join(INPROCESS_DIR, context[1] + "_signed.pdf")
-                dest_file = os.path.join(SUCCESS_DIR, context[1] + "_signed.pdf")
+                if source_file.exists():
+                    shutil.move(str(source_file), str(dest_file))
 
-                if os.path.exists(source_file):
-
-                    logging.debug("5.Delete Source File " + context[0])
-                    rmv(os.path.join(INPROCESS_DIR, context[0]))
-
-                    logging.debug("6.Delete Destination File " + context[1])
-                    if os.path.exists(dest_file):
-                        os.remove(dest_file)
-
-                    logging.debug("7.Move to Destination File " + context[1])
-                    shutil.move(source_file, SUCCESS_DIR)
-                    logging.info("8.File successfully created: " + INPROCESS_DIR + "\\" + context[0])
-                    print("File successfully created:", os.path.join(SUCCESS_DIR, context[1] + "_signed.pdf"))
-            else:
-                sign_pdf(
-                    os.path.join(INPROCESS_DIR, context[0]), ctx, context[4], "_pen.pdf"
-                )
-
-                # If successful signed file gneerated
-                source_file = os.path.join(INPROCESS_DIR, context[1] + "_pen.pdf")
-                dest_file = os.path.join(INPROCESS_DIR, context[0])
-
-                if os.path.exists(INPROCESS_DIR + "//" + context[1] + "_pen.pdf"):
-                    logging.debug(
-                        "9.Removing file " + INPROCESS_DIR + "\\" + context[0]
-                    )
-                    rmv(dest_file)
-
-                    logging.debug(
-                        "10.Renaming file " + context[1] + "_pen.pdf => " + context[0]
-                    )
-                    os.rename(source_file, dest_file)
-                else:
-                    break
-
-    except Exception as e:
-        logging.warning("11." + str(e))
+    except Exception as err:
+        logging.critical(f"{err}")
 
 
-def _load_logo():
+def load_logo():
     """
     Loads logo.png from next to the script or BASE_DIR.
     Scales to fit within 200 x 70 px, preserving aspect ratio.
     Returns a tk.PhotoImage, or None if no logo file is found.
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(script_dir, "logo.png"),
-        os.path.join(BASE_DIR,   "logo.png"),
-    ]
-    for path in candidates:
-        if not os.path.exists(path):
-            continue
+    if LOGO_PATH.exists():
+        logging.debug(f"{LOGO_PATH} exist")
         try:
-            doc = fitz.open(path)
+            doc = fitz.open(str(LOGO_PATH))
             page = doc[0]
             w, h = page.rect.width, page.rect.height
             scale = min(200 / w, 70 / h, 2.0)
             pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
             doc.close()
-            return tk.PhotoImage(data=base64.b64encode(pix.tobytes("png")).decode())
-        except Exception:
-            pass
+            logo = tk.PhotoImage(data=base64.b64encode(pix.tobytes("png")).decode())
+            logging.info("Logo Loaded")
+            return logo
+        except Exception as err:
+            logging.critical(f"{err}")
+    logging.critical("None")
     return None
 
 
@@ -252,15 +259,15 @@ def esign_app():
     Tkinter dialog to capture the USB token PIN from the user.
     """
     # ── Light theme palette ───────────────────────────────────────────────────
-    BG         = "#f9fafb"
-    HEADER_BG  = "#ffffff"
-    INPUT_BG   = "#ffffff"
-    BORDER     = "#d1d5db"
-    ACCENT     = "#2563eb"
-    ACCENT_H   = "#1d4ed8"
-    FG_MAIN    = "#111827"
-    FG_DIM     = "#6b7280"
-    ERR_FG     = "#dc2626"
+    BG = "#f9fafb"
+    HEADER_BG = "#ffffff"
+    INPUT_BG = "#ffffff"
+    BORDER = "#d1d5db"
+    ACCENT = "#2563eb"
+    ACCENT_H = "#1d4ed8"
+    FG_MAIN = "#111827"
+    FG_DIM = "#6b7280"
+    ERR_FG = "#dc2626"
     BTN_SEC_BG = "#f3f4f6"
     BTN_SEC_FG = "#374151"
 
@@ -271,37 +278,50 @@ def esign_app():
 
     W, H = 420, 320
     app.update_idletasks()
-    x = (app.winfo_screenwidth()  - W) // 2
+    x = (app.winfo_screenwidth() - W) // 2
     y = (app.winfo_screenheight() - H) // 2
     app.geometry(f"{W}x{H}+{x}+{y}")
 
     app.attributes("-topmost", True)
     app.after(200, lambda: app.attributes("-topmost", False))
 
-    # ── Header ────────────────────────────────────────────────────────────────
     header = tk.Frame(app, bg=HEADER_BG, pady=20)
     header.pack(fill="x")
 
-    logo_photo = _load_logo()
+    logo_photo = load_logo()
     if logo_photo:
         lbl = tk.Label(header, image=logo_photo, bg=HEADER_BG)
-        lbl.image = logo_photo          # keep reference alive
+        lbl.image = logo_photo
         lbl.pack()
     else:
-        tk.Label(header, text="F.T. Solutions Pvt Ltd",
-                 font=("Segoe UI", 14, "bold"), fg=ACCENT, bg=HEADER_BG).pack()
+        tk.Label(
+            header,
+            text="F.T. Solutions Pvt Ltd",
+            font=("Segoe UI", 14, "bold"),
+            fg=ACCENT,
+            bg=HEADER_BG,
+        ).pack()
 
-    tk.Label(header, text="USB Token Authentication",
-             font=("Segoe UI", 9), fg=FG_DIM, bg=HEADER_BG).pack(pady=(4, 0))
+    tk.Label(
+        header,
+        text="USB Token Authentication",
+        font=("Segoe UI", 9),
+        fg=FG_DIM,
+        bg=HEADER_BG,
+    ).pack(pady=(4, 0))
 
     tk.Frame(app, bg=BORDER, height=1).pack(fill="x")
 
-    # ── Body ──────────────────────────────────────────────────────────────────
     body = tk.Frame(app, bg=BG, padx=40, pady=24)
     body.pack(fill="both", expand=True)
 
-    tk.Label(body, text="Token PIN / Password",
-             font=("Segoe UI", 9, "bold"), fg=FG_MAIN, bg=BG).pack(anchor="w")
+    tk.Label(
+        body,
+        text="Token PIN / Password",
+        font=("Segoe UI", 9, "bold"),
+        fg=FG_MAIN,
+        bg=BG,
+    ).pack(anchor="w")
 
     # Bordered input row
     border_frame = tk.Frame(body, bg=BORDER)
@@ -309,9 +329,16 @@ def esign_app():
     input_row = tk.Frame(border_frame, bg=INPUT_BG)
     input_row.pack(fill="x", padx=1, pady=1)
 
-    pwd = tk.Entry(input_row, show="●", font=("Segoe UI", 11),
-                   bg=INPUT_BG, fg=FG_MAIN, bd=0, relief="flat",
-                   insertbackground=FG_MAIN)
+    pwd = tk.Entry(
+        input_row,
+        show="●",
+        font=("Segoe UI", 11),
+        bg=INPUT_BG,
+        fg=FG_MAIN,
+        bd=0,
+        relief="flat",
+        insertbackground=FG_MAIN,
+    )
     pwd.pack(side="left", fill="x", expand=True, ipady=9, padx=(10, 0))
 
     visible = tk.BooleanVar(value=False)
@@ -326,17 +353,23 @@ def esign_app():
             eye_btn.config(text="\U0001f648")
             visible.set(True)
 
-    eye_btn = tk.Button(input_row, text="\U0001f441", command=toggle_visibility,
-                        bg=INPUT_BG, fg=FG_DIM, bd=0, relief="flat",
-                        font=("Segoe UI", 11), cursor="hand2",
-                        activebackground=INPUT_BG)
+    eye_btn = tk.Button(
+        input_row,
+        text="\U0001f441",
+        command=toggle_visibility,
+        bg=INPUT_BG,
+        fg=FG_DIM,
+        bd=0,
+        relief="flat",
+        font=("Segoe UI", 11),
+        cursor="hand2",
+        activebackground=INPUT_BG,
+    )
     eye_btn.pack(side="right", padx=6)
 
-    err_label = tk.Label(body, text="", font=("Segoe UI", 8),
-                         fg=ERR_FG, bg=BG)
+    err_label = tk.Label(body, text="", font=("Segoe UI", 8), fg=ERR_FG, bg=BG)
     err_label.pack(anchor="w", pady=(6, 0))
 
-    # ── Buttons ───────────────────────────────────────────────────────────────
     btn_row = tk.Frame(body, bg=BG)
     btn_row.pack(fill="x", pady=(8, 0))
 
@@ -356,17 +389,35 @@ def esign_app():
         SERVICE = False
         app.destroy()
 
-    tk.Button(btn_row, text="Cancel", command=end_service,
-              bg=BTN_SEC_BG, fg=BTN_SEC_FG, bd=0, relief="flat",
-              font=("Segoe UI", 10), cursor="hand2",
-              padx=18, pady=7,
-              activebackground="#e5e7eb").pack(side="right", padx=(8, 0))
+    tk.Button(
+        btn_row,
+        text="Cancel",
+        command=end_service,
+        bg=BTN_SEC_BG,
+        fg=BTN_SEC_FG,
+        bd=0,
+        relief="flat",
+        font=("Segoe UI", 10),
+        cursor="hand2",
+        padx=18,
+        pady=7,
+        activebackground="#e5e7eb",
+    ).pack(side="right", padx=(8, 0))
 
-    tk.Button(btn_row, text="Start Signing", command=start_service,
-              bg=ACCENT, fg="#ffffff", bd=0, relief="flat",
-              font=("Segoe UI", 10, "bold"), cursor="hand2",
-              padx=18, pady=7,
-              activebackground=ACCENT_H).pack(side="right")
+    tk.Button(
+        btn_row,
+        text="Start Signing",
+        command=start_service,
+        bg=ACCENT,
+        fg="#ffffff",
+        bd=0,
+        relief="flat",
+        font=("Segoe UI", 10, "bold"),
+        cursor="hand2",
+        padx=18,
+        pady=7,
+        activebackground=ACCENT_H,
+    ).pack(side="right")
 
     app.bind("<Return>", lambda _: start_service())
     app.bind("<Escape>", lambda _: end_service())
@@ -390,49 +441,67 @@ def main():
         ->text.py
     @return:
     """
-    global SERVICE
-    # Get Token Password
-    esign = Thread(target=esign_app)
-    esign.start()
-    log_thread = Thread(target=rmv, args=[LOG_PATH])
-    log_thread.start()
-    now = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=12)
+    global SERVICE, TOKEN_PWD
 
-    # Initiating Log
-    log_thread.join()
-    logging.basicConfig(
-        filename=LOG_PATH,
-        filemode="a",
-        level=logging.INFO,
-        format="%(message)s - %(asctime)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    logging.critical("Hello World")
-    # Cooking Assets
-    Thread(target=store_assets, daemon=False).start()
+    args = _parse_args()
+    saved_flags, saved_password = load_config()
+    logging.getLogger().setLevel(logging.DEBUG if args.v else logging.INFO)
+    logging.critical("FTSPL - DIGISIGN")
 
-    esign.join()
+    store_assets()
+    if args.e:
+        logging.info("Assets extracted: %s", BASE_DIR)
+        return
+
+    if args.r:
+        rmv(CFG_PATH)
+        logging.info("Cleared Config")
+        saved_flags, saved_password = [], None
+
+    flags_to_save = []
+    if args.s:
+        if args.v:
+            flags_to_save.append("-v")
+        if args.a:
+            flags_to_save.append("-a")
+        if args.c:
+            flags_to_save.append("-c")
+        if args.r:
+            flags_to_save.append("-r")
+        if args.e:
+            flags_to_save.append("-e")
+
+    if args.a and saved_password:
+        TOKEN_PWD, SERVICE = saved_password, True
+    else:
+        esign = Thread(target=esign_app)
+        esign.start()
+        esign.join()
 
     if SERVICE:
         class Signer(hsm.HSM):
             def __init__(self, dllpath):
                 self.pkcs11 = PyKCS11Lib()
-                self.pkcs11.load(dllpath)
+                self.pkcs11.load(str(dllpath))
 
             def open_session(self):
-                slots = [
-                    slot
-                    for slot in self.pkcs11.getSlotList(tokenPresent=True)
-                    if self.pkcs11.getTokenInfo(slot)
-                ]
+                try:
+                    slots = [
+                        slot
+                        for slot in self.pkcs11.getSlotList(tokenPresent=True)
+                        if self.pkcs11.getTokenInfo(slot)
+                    ]
 
-                if not slots:
-                    raise Exception("USB Token not detected")
+                    if not slots:
+                        raise Exception("USB Token not detected")
 
-                slot = slots[0]
-                session = self.pkcs11.openSession(slot)
-                session.login(TOKEN_PWD)
-                return session
+                    slot = slots[0]
+                    session = self.pkcs11.openSession(slot)
+                    session.login(TOKEN_PWD)
+                    return session
+                except Exception as err:
+                    logging.critical(f"{err}")
+
 
             def cert_name(self):
                 global SERVICE
@@ -441,29 +510,24 @@ def main():
                 try:
                     session = self.open_session()
 
-                    certificates = session.findObjects([
-                        (CKA_CLASS, CKO_CERTIFICATE)
-                    ])
+                    certificates = session.findObjects([(CKA_CLASS, CKO_CERTIFICATE)])
 
                     for cert in certificates:
 
                         # Get certificate binary
-                        cert_der = bytes(session.getAttributeValue(
-                            cert,
-                            [PyKCS11.CKA_VALUE]
-                        )[0])
-
+                        cert_der = bytes(
+                            session.getAttributeValue(cert, [PyKCS11.CKA_VALUE])[0]
+                        )
 
                         x509_cert = x509.load_der_x509_certificate(
-                            cert_der,
-                            default_backend()
+                            cert_der, default_backend()
                         )
 
                         cn = x509_cert.subject.get_attributes_for_oid(
                             NameOID.COMMON_NAME
                         )[0].value
 
-                        print("Certificate Name:", cn)
+                        logging.critical(f"Certificate Name: {cn}")
 
                         return cn
 
@@ -508,7 +572,6 @@ def main():
                         return bytes(attr_dict[PyKCS11.CKA_ID]), cert
 
                 finally:
-
                     try:
                         if session:
                             session.logout()
@@ -533,6 +596,7 @@ def main():
                         priv_key, data, PyKCS11.Mechanism(mech, None)
                     )
                     return bytes(signature)
+                
                 finally:
                     try:
                         if session:
@@ -543,41 +607,132 @@ def main():
 
         try:
             clshsm = Signer(DLL_PATH)
-            for path_to, directories, files in os.walk(INPROCESS_DIR):
-                for filename_ext in files:
-                    file_name, file_ext = os.path.splitext(filename_ext)
-                    if filename_ext and file_ext.lower() == ".pdf":
-                        try:
-                            logging.info(
-                                "14." + str(INPROCESS_DIR + "\\" + filename_ext)
-                            )
-                            ab_list = file_name.split("_")
-                            cord_a = int(ab_list[-1])
-                            cord_b = int(ab_list[-2])
-                            cord_c = cord_a + 180
-                            cord_d = cord_b + 40
-                            context = [
-                                filename_ext,
-                                file_name,
-                                (cord_a, cord_b, cord_c, cord_d),
-                                now,
-                                clshsm,
-                            ]
-                            file_processing(context)
-                        except Exception as e:
-                            logging.warning("15." + str(e))
-                        continue
-        except Exception as e:
-            logging.warning("13." + str(e))
+            pdf_files = list(IN_DIR.glob("*.pdf"))
+            logging.info(f"PDFs: {pdf_files}")
+            for file_path in pdf_files:
+                now = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=12)
+                logging.info(f"{file_path.name}")
+                file_name = file_path.stem
+                ab_list = file_name.split("_")
+                cord_a = int(ab_list[-1])
+                cord_b = int(ab_list[-2])
+                cord_c = cord_a + 180
+                cord_d = cord_b + 40
+                processingFile(
+                        file_path,
+                        (cord_a, cord_b, cord_c, cord_d),
+                        now,
+                        clshsm,
+                )
+            del clshsm
+        except Exception as err:
+            logging.critical(f"{err}")
+
+        if args.a:
+            persist_flags = (
+                flags_to_save if flags_to_save is not None else list(saved_flags)
+            )
+            if "-a" not in persist_flags:
+                persist_flags.append("-a")
+            try:
+                with open(CFG_PATH, "wb") as f:
+                    pickle.dump(
+                        {
+                            "flags": persist_flags,
+                            "password": TOKEN_PWD if SERVICE else saved_password,
+                        },
+                        f,
+                    )
+                    logging.info(f"Password saved")
+            except Exception as err:
+                logging.critical(f"{err}")
+    
+    if not args.c:
+        cleanup()
+
+
+def cleanup():
+    for i in (TICK_PATH, DLL_PATH, FONT_PATH, LOGO_PATH):
+        rmv(i)
+
+
+def _parse_args():
+    """
+    Merge saved flags (from pickle) with current sys.argv, then parse.
+    Saved flags act as defaults; flags passed on the command line take effect too.
+    """
+    saved_flags, _ = load_config()
+    combined = saved_flags + sys.argv[1:]
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "========================\n"
+            "𝖥.𝖳. 𝖲𝗈𝗅𝗎𝗍𝗂𝗈𝗇𝗌 𝖯𝗏𝗍. 𝖫𝗍𝖽.\n"
+            "𝖡𝖺𝗅𝖺𝗃𝗂 𝖨𝗇𝖿𝗈𝗍𝖾𝖼𝗁 𝖯𝖺𝗋𝗄, 𝟥𝟢𝟣, 𝖱𝖽 𝖭𝗎𝗆𝖻𝖾𝗋 𝟣𝟨𝖠,\n"
+            "𝖠𝗆𝖻𝗂𝖼𝖺 𝖭𝖺𝗀𝖺𝗋, 𝖶𝖺𝗀𝗅𝖾 𝖨𝗇𝖽𝗎𝗌𝗍𝗋𝗂𝖺𝗅 𝖤𝗌𝗍𝖺𝗍𝖾\n"
+            "𝖳𝗁𝖺𝗇𝖾 𝖶𝖾𝗌𝗍, 𝖬𝖺𝗁𝖺𝗋𝖺𝗌𝗁𝗍𝗋𝖺 𝟦𝟢𝟢𝟨𝟢𝟦\n"
+            "========================\n"
+            "DigiSign – USB Token PDF Signing Tool\n"
+            "Digitally signs all PDF files found in the InProcess folder using\n"
+            "an ePass2003 USB token and moves signed files to the Success folder."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  DigiSign.exe              Run with GUI PIN prompt and cleanup after signing\n"
+            "  DigiSign.exe -a -s        GUI prompt, save PIN + flag; future runs skip GUI\n"
+            "  DigiSign.exe -v -s        Debug logging saved for all future runs\n"
+            "  DigiSign.exe -c           Run without cleanup (keep assets after signing)\n"
+            "  DigiSign.exe -c -s        Save -c so cleanup is always skipped\n"
+            "  DigiSign.exe -r           Clear all saved arguments and reset to defaults\n"
+            "  DigiSign.exe -e           Extract bundled assets to working directory and exit\n"
+            "\n"
+            "Note: -s persists all active flags for the next run (except -h).\n"
+            "      Saved arguments are stored in: " + str(CFG_PATH)
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-v", action="store_true", help="Enable DEBUG-level logging (default: INFO)"
+    )
+    parser.add_argument(
+        "-s",
+        action="store_true",
+        help="Save all current arguments to disk so they are reused on the next run (works with all flags except -h)",
+    )
+    parser.add_argument(
+        "-r",
+        action="store_true",
+        help="Delete the saved-arguments pickle file and reset to defaults",
+    )
+    parser.add_argument(
+        "-a",
+        action="store_true",
+        help="Auto-password mode: collect PIN via GUI, save it after signing; skip GUI on subsequent runs",
+    )
+    parser.add_argument(
+        "-c",
+        action="store_true",
+        help="Cancel post-signing cleanup (assets are kept); default is to remove assets after signing",
+    )
+    parser.add_argument(
+        "-e",
+        action="store_true",
+        help="Extract/copy bundled assets to the working directory and exit",
+    )
+    return parser.parse_args(combined)
 
 
 if __name__ == "__main__":
-    main()
-    sleep(15)
-    rmv(TICK_PATH)
     try:
-        rmv(DLL_PATH)
-    except PermissionError:
-        pass
-    rmv(FONT_PATH)
-    rmv(LOGO_PATH)
+        parent = psutil.Process().parent()
+        parent_info = f"{parent.name()} (pid={parent.pid})" if parent else "unknown"
+    except Exception as err:
+        logging.critical(f"{err}")
+
+    logging.debug(
+        "System|cwd=%s|exe=%s|parent=%s",
+        Path.cwd(),
+        sys.executable,
+        parent_info,
+    )
+    main()
